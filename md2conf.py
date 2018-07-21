@@ -28,6 +28,7 @@ parser.add_argument('-c', '--contents', action='store_true', default=False, help
 parser.add_argument('-g', '--nogo', action='store_true', default=False, help='Use this option to skip navigation after upload.')
 parser.add_argument('-n', '--nossl', action='store_true', default=False, help='Use this option if NOT using SSL. Will use HTTP instead of HTTPS.')
 parser.add_argument('-d', '--delete', action='store_true', default=False, help='Use this option to delete the page instead of create it.')
+parser.add_argument('-co', '--comment', help='Use this option to comment on an existing Confluence page identified by title.')
 args = parser.parse_args()
 
 # Assign global variables
@@ -43,82 +44,84 @@ try:
 	attachments = args.attachment
 	goToPage = not args.nogo
 	contents = args.contents
-	
+	comment = args.comment
+
 	if username is None:
 		print 'Error: Username not specified by environment variable or option.'
 		sys.exit(1)
-		
+
 	if password is None:
 		print 'Error: Password not specified by environment variable or option.'
 		sys.exit(1)
-		
+
 	if orgname is None:
 		print 'Error: Org Name not specified by environment variable or option.'
 		sys.exit(1)
-	
+
 	if not os.path.exists(markdownFile):
 		print 'Error: Markdown file: %s does not exist.' % (markdownFile)
 		sys.exit(1)
-	
+
 	if spacekey is None:
 		spacekey='~%s' % (username)
-	
-	wikiUrl = 'https://%s.atlassian.net/wiki' % orgname
+
+	wikiUrl = 'https://%s' % orgname
 	if nossl:
-		wikiUrl.replace('https://','http://')
-			
+		wikiUrl = wikiUrl.replace('https://','http://')
+		print '\nWiki url is %s' % (wikiUrl)
+
 except Exception, err:
 	print '\n\nException caught:\n%s ' % (err)
         print '\nFailed to process command line arguments. Exiting.'
         sys.exit(1)
-	
+
 # Convert html code blocks to Confluence macros
 def convertCodeBlock(html):
 	codeBlocks = re.findall('<pre><code.*?>.*?<\/code><\/pre>', html, re.DOTALL)
 	if codeBlocks:
 		for tag in codeBlocks:
-			
+
 			confML = '<ac:structured-macro ac:name="code">'
 			confML = confML + '<ac:parameter ac:name="theme">Midnight</ac:parameter>'
 			confML = confML + '<ac:parameter ac:name="linenumbers">true</ac:parameter>'
-			
+
 			lang = re.search('code class="(.*)"', tag)
 			if lang:
 				lang = lang.group(1)
 			else:
 				lang = 'none'
-				
+
 			confML = confML + '<ac:parameter ac:name="language">' + lang + '</ac:parameter>'
 			content = re.search('<pre><code.*?>(.*?)<\/code><\/pre>', tag, re.DOTALL).group(1)
 			content = '<ac:plain-text-body><![CDATA[' + content + ']]></ac:plain-text-body>'
 			confML = confML + content + '</ac:structured-macro>'
 			confML = confML.replace('&lt;', '<').replace('&gt;', '>')
 			confML = confML.replace('&quot;', '"').replace('&amp;', '&')
-			
+
 			html = html.replace(tag, confML)
-	
+
 	return html
 
 # Converts html for info, note or warning macros
 def convertInfoMacros(html):
-	
+
 	infoTag = '<p><ac:structured-macro ac:name="info"><ac:rich-text-body><p>'
 	noteTag = infoTag.replace('info','note')
 	warningTag = infoTag.replace('info','warning')
 	closeTag = '</p></ac:rich-text-body></ac:structured-macro></p>'
-	
+
 	# Custom tags converted into macros
 	html=html.replace('<p>~?', infoTag).replace('?~</p>', closeTag)
 	html=html.replace('<p>~!', noteTag).replace('!~</p>', closeTag)
 	html=html.replace('<p>~%', warningTag).replace('%~</p>', closeTag)
-		
+
 	# Convert block quotes into macros
 	quotes = re.findall('<blockquote>(.*?)</blockquote>', html, re.DOTALL)
 	if quotes:
 		for q in quotes:
 			note = re.search('^<.*>Note', q.strip(), re.IGNORECASE)
 			warning = re.search('^<.*>Warning', q.strip(), re.IGNORECASE)
-				
+
 			if note:
 				cleanTag = stripType(q, 'Note')
 				macroTag = cleanTag.replace('<p>', noteTag).replace('</p>', closeTag).strip()
@@ -127,10 +130,10 @@ def convertInfoMacros(html):
 				macroTag = cleanTag.replace('<p>', warningTag).replace('</p>', closeTag).strip()
 			else:
 				macroTag = q.replace('<p>', infoTag).replace('</p>', closeTag).strip()
-			
+
 			html = html.replace('<blockquote>%s</blockquote>' % q, macroTag)
 	return html
-	
+
 # Strips Note or Warning tags from html in various formats
 def stripType(tag, type):
 	tag = re.sub('%s:\s' % type, '', tag.strip(), re.IGNORECASE)
@@ -144,7 +147,7 @@ def stripType(tag, type):
 	stringStart = re.search('<.*?>', tag)
 	tag = upperChars(tag, [stringStart.end()])
 	return tag
-	
+
 # Make characters uppercase in string
 def upperChars(string, indices):
 	upperString = "".join(c.upper() if i in indices else c for i, c in enumerate(string))
@@ -153,9 +156,9 @@ def upperChars(string, indices):
 # Process references
 def processRefs(html):
 	refs = re.findall('\n(\[\^(\d)\].*)|<p>(\[\^(\d)\].*)', html)
-	
+
 	if len(refs) > 0:
-			
+
 		for ref in refs:
 			if ref[0]:
 				fullRef = ref[0].replace('</p>', '').replace('<p>', '')
@@ -163,14 +166,14 @@ def processRefs(html):
 			else:
 				fullRef = ref[2]
 				refID = ref[3]
-		
+
 			fullRef = fullRef.replace('</p>', '').replace('<p>', '')
 			html = html.replace(fullRef, '')
 			href = re.search('href="(.*?)"', fullRef).group(1)
-		
+
 			superscript = '<a id="test" href="%s"><sup>%s</sup></a>' % (href, refID)
 			html = html.replace('[^%s]' % refID, superscript)
-	
+
 	return html
 
 # Retrieve page details by title
@@ -180,9 +183,9 @@ def getPage(title):
 
 	s = requests.Session()
 	s.auth = (username, password)
-	
+
 	r = s.get(url)
-	
+
 	# Check for errors
 	try:
 		r.raise_for_status()
@@ -193,14 +196,14 @@ def getPage(title):
 			print '\tSpace Key : %s' % spacekey
 			print '\tOrganisation Name: %s\n' % orgname
 		sys.exit(1)
-		
+
 	data = r.json()
-	
+
 	if len(data[u'results']) >= 1:
 		pageId = data[u'results'][0][u'id']
 		versionNum =  data[u'results'][0][u'version'][u'number']
 		link = '%s%s' % (wikiUrl, data[u'results'][0][u'_links'][u'webui'])
-		
+
 		pageInfo = collections.namedtuple('PageInfo', ['id','version', 'link'])
 		p = pageInfo(pageId, versionNum, link)
 		return p
@@ -210,7 +213,7 @@ def getPage(title):
 # Scan for images and upload as attachments if found
 def addImages(pageId, html):
 	sourceFolder = os.path.dirname(os.path.abspath(markdownFile)).decode('utf-8')
-	
+
 	for tag in re.findall('<img(.*?)\/>', html):
 		relPath = re.search('src="(.*?)"', tag).group(1)
 		altText = re.search('alt="(.*?)"', tag).group(1)
@@ -219,7 +222,7 @@ def addImages(pageId, html):
 		uploadAttachment(pageId, absPath, altText)
 		if re.search('http.*', relPath) is None:
 			html = html.replace('%s'%(relPath),'/wiki/download/attachments/%s/%s'%(pageId, basename))
-	
+
 	return html
 
 # Add contents page
@@ -228,29 +231,53 @@ def addContents(html):
   	contentsMarkup = contentsMarkup + '<ac:parameter ac:name="maxLevel">5</ac:parameter>\n<ac:parameter ac:name="minLevel">1</ac:parameter>'
   	contentsMarkup = contentsMarkup + '<ac:parameter ac:name="class">rm-contents</ac:parameter>\n<ac:parameter ac:name="exclude"></ac:parameter>\n<ac:parameter ac:name="type">list</ac:parameter>'
  	contentsMarkup = contentsMarkup + '<ac:parameter ac:name="outline">false</ac:parameter>\n<ac:parameter ac:name="include"></ac:parameter>\n</ac:structured-macro>'
- 	
- 	
+
+
  	html = contentsMarkup + '\n' + html
  	return html
 
 # Add attachments for an array of files
 def addAttachments(pageId, files):
 	sourceFolder = os.path.dirname(os.path.abspath(markdownFile)).decode('utf-8')
-	
+
 	if files:
 		for file in files:
 			uploadAttachment(pageId, os.path.join(sourceFolder, file), '')
-	
-# Create a new page
-def createPage(title, body, ancestors):
-	print '\nCreating page...'
-	
-	url = '%s/rest/api/content/' % wikiUrl
-	
+
+
+def commentOnPage(pageId, comment):
+	print '\nCreating comment on page...'
+	url = '%s/rest/api/content' % wikiUrl
+
 	s = requests.Session()
 	s.auth = (username, password)
 	s.headers.update({'Content-Type' : 'application/json'})
-	
+	print '\n Page id = %s. Comment = %s ' % (pageId, comment)
+
+	pageData = {'type':'comment', \
+		'container': { 'type': 'page', 'id': pageId, 'status': 'current' }, \
+    	'body':{'storage':{'value': comment,'representation':'storage'}}}
+
+	r = requests.post(url, data=json.dumps(pageData))
+
+	# Check for errors
+	try:
+		r.raise_for_status()
+		print '\nCommented successfully!'
+	except Exception as err:
+		print '\nError: Could not comment. Error: %s' % err.message
+		sys.exit(1)
+
+# Create a new page
+def createPage(title, body, ancestors):
+	print '\nCreating page...'
+
+	url = '%s/rest/api/content/' % wikiUrl
+
+	s = requests.Session()
+	s.auth = (username, password)
+	s.headers.update({'Content-Type' : 'application/json'})
+
 	newPage = { 'type' : 'page', \
 	 'title' : title, \
 	 'space' : {'key' : spacekey}, \
@@ -262,20 +289,20 @@ def createPage(title, body, ancestors):
 	 	}, \
 	 'ancestors' : ancestors \
 	 }
-	
+
 	r = s.post(url, data=json.dumps(newPage))
 	r.raise_for_status()
-	
+
 	if r.status_code == 200:
 		data = r.json()
 		spaceName = data[u'space'][u'name']
 		pageId = data[u'id']
 		version = data[u'version'][u'number']
 		link = '%s%s' %(wikiUrl, data[u'_links'][u'webui'])
-		
+
 		print '\nPage created in %s with ID: %s.' % (spaceName, pageId)
 		print 'URL: %s' % link
-		
+
 		imgCheck = re.search('<img(.*?)\/>', body)
 		if imgCheck or attachments:
 			print '\tAttachments found, update procedure called.'
@@ -291,14 +318,14 @@ def createPage(title, body, ancestors):
 def deletePage(pageId):
 	print '\nDeleting page...'
 	url = '%s/rest/api/content/%s' % (wikiUrl, pageId)
-	
+
 	s = requests.Session()
 	s.auth = (username, password)
 	s.headers.update({'Content-Type' : 'application/json'})
 
 	r = s.delete(url)
 	r.raise_for_status()
-	
+
 	if r.status_code == 204:
 		print 'Page %s deleted successfully.' % pageId
 	else:
@@ -307,17 +334,17 @@ def deletePage(pageId):
 # Update a page
 def updatePage(pageId, title, body, version, ancestors, attachments):
 	print '\nUpdating page...'
-	
+
 	# Add images and attachments
 	body = addImages(pageId, body)
 	addAttachments(pageId, attachments)
-	
+
 	url = '%s/rest/api/content/%s' % (wikiUrl, pageId)
-	
+
 	s = requests.Session()
 	s.auth = (username, password)
 	s.headers.update({'Content-Type' : 'application/json'})
-	
+
 	pageJson = { \
   		"id" : pageId, \
   		"type" : "page", \
@@ -334,14 +361,14 @@ def updatePage(pageId, title, body, version, ancestors, attachments):
   		}, \
   		'ancestors' : ancestors \
 	}
-	
+
 	r = s.put(url, data=json.dumps(pageJson))
 	r.raise_for_status()
-	
+
 	if r.status_code == 200:
 		data = r.json()
 		link = '%s%s' %(wikiUrl, data[u'_links'][u'webui'])
-		
+
 		print "\nPage updated successfully."
 		print 'URL: %s' % link
 		if goToPage:
@@ -351,51 +378,51 @@ def updatePage(pageId, title, body, version, ancestors, attachments):
 
 def getAttachment(pageId, filename):
 	url = '%s/rest/api/content/%s/child/attachment?filename=%s' % (wikiUrl, pageId, filename)
-	
+
 	s = requests.Session()
 	s.auth = (username, password)
-	
+
 	r = s.get(url)
 	r.raise_for_status()
 	data = r.json()
-	
+
 	if len(data[u'results']) >= 1:
-		attId = data[u'results'][0]['id']	
+		attId = data[u'results'][0]['id']
 		attInfo = collections.namedtuple('AttachmentInfo', ['id'])
 		a = attInfo(attId)
 		return a
 	else:
 		return False
 
-# Upload an attachment	
+# Upload an attachment
 def uploadAttachment(pageId, file, comment):
-	
+
 	if re.search('http.*', file):
 		return False
-	
+
 	contentType = mimetypes.guess_type(file)[0]
 	fileName = os.path.basename(file)
-	
+
 	fileToUpload = {
 		'comment' : comment,
 		'file' : (fileName, open(file, 'rb'), contentType, {'Expires': '0'})
 	}
-	
+
 	attachment = getAttachment(pageId, fileName)
 	if attachment:
 		url = '%s/rest/api/content/%s/child/attachment/%s/data' % (wikiUrl, pageId, attachment.id)
 	else:
 		url = '%s/rest/api/content/%s/child/attachment/' % (wikiUrl, pageId)
-	
+
 	s = requests.Session()
 	s.auth = (username, password)
 	s.headers.update({'X-Atlassian-Token' : 'no-check'})
-	
+
 	print '\tUploading attachment %s...' % fileName
-	
+
 	r = s.post(url, files=fileToUpload)
 	r.raise_for_status()
-	
+
 
 def main():
 	print '\n\n\t\t----------------------------------'
@@ -404,34 +431,38 @@ def main():
 
 	print 'Markdown file:\t%s' % markdownFile
 	print 'Space Key:\t%s' % spacekey
-	
+
 	with open(markdownFile, 'r') as f:
 		title = f.readline().strip()
 		f.seek(0)
 		mdContent = f.read()
-		
+
 	print 'Title:\t\t%s' % title
-	
+
 	with codecs.open(markdownFile,'r','utf-8') as f:
 		html=markdown.markdown(f.read(), extensions = ['markdown.extensions.tables', 'markdown.extensions.fenced_code'])
-	
+
 	html = '\n'.join(html.split('\n')[1:])
-	
+
 	html = convertInfoMacros(html)
 	html = convertCodeBlock(html)
-	
+
 	if contents:
 		html = addContents(html)
 
 	html = processRefs(html)
 
-	print '\nChecking if Atlas page exists...'
+	print '\nChecking if Confluence page exists...'
 	page = getPage(title)
-	
+
+	if comment and page:
+		commentOnPage(page.id, comment)
+		sys.exit(0)
+
 	if delete and page:
 		deletePage(page.id)
 		sys.exit(1)
-		
+
 	if ancestor:
 		parentPage = getPage(ancestor)
 		if parentPage:
@@ -441,12 +472,12 @@ def main():
 			sys.exit(1)
 	else:
 		ancestors = []
-	
+
 	if page:
 		updatePage(page.id, title, html, page.version, ancestors, attachments)
 	else:
 		createPage(title, html, ancestors)
-	
+
 	print '\nMarkdown Converter completed successfully.'
 
 if __name__ == "__main__":
